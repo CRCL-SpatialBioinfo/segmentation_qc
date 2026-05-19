@@ -1,0 +1,28 @@
+---
+title: "Overview"
+---
+
+## Context
+
+This report presents the segmentation quality control for Xenium data,
+comparing two segmentation methods:
+
+- **Xenium**: 10x Genomics multi-modal cell segmentation
+- **Proseg v3**: transcript-based cell segmentation
+
+## Methods
+
+| Method    | Description                              |
+|-----------|------------------------------------------|
+| Xenium    | Official 10x multi-modal segmentation   |
+| Proseg v3 | Transcript assignment-based segmentation |
+
+## Report structure
+
+1. **Baseline** — core metrics (cells, transcripts, genes)
+2. **Morphology** — cell shape and size
+3. **Clustering stability** — cluster coherence
+4. **Contamination** — region similarity, border admixture
+3. **Volume (3D)** - z-dimension metrics
+5. **Supervised** — consistency with scRNA-seq reference *(optional)*
+6. **Summary** — comparative table and recommendation

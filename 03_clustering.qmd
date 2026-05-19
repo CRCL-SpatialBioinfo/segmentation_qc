@@ -1,0 +1,135 @@
+---
+title: "Clustering Stability"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scanpy as sc
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+st_dict = load_processed_data(params)
+
+# Preprocessing and clustering for each method
+for method, st in st_dict.items():
+    adata = st.sdata.tables["table"]
+    adata.layers["counts"] = adata.X.copy()
+    sc.pp.normalize_total(adata, inplace=True)
+    sc.pp.log1p(adata)
+    sc.pp.pca(adata)
+    sc.pp.neighbors(adata)
+    sc.tl.umap(adata)
+    sc.tl.leiden(adata, flavor="igraph", n_iterations=2)
+    print(f"{method}: clustering done")
+```
+
+## Overview
+
+The clustering stability module evaluates how well the segmentation
+produces internally consistent expression profiles. High clustering
+stability suggests less transcript contamination between cells.
+
+## UMAP visualization
+
+```{python}
+fig, axes = plt.subplots(1, len(st_dict), figsize=(6 * len(st_dict), 5))
+
+if len(st_dict) == 1:
+    axes = [axes]
+
+for ax, (method, st) in zip(axes, st_dict.items()):
+    adata = st.sdata.tables["table"]
+    sc.pl.umap(
+        adata,
+        color="leiden",
+        palette="Set2",
+        ax=ax,
+        show=False,
+        title=method,
+    )
+
+plt.tight_layout()
+plt.show()
+```
+
+## Clustering stability metrics
+
+```{python}
+rows = []
+for method, st in st_dict.items():
+    ccd = st.cs.cluster_connectedness()
+    sil = st.cs.silhouette_score()
+    pur = st.cs.purity()
+    ari = st.cs.adjusted_rand_index()
+
+    rows.append({
+        "Method": method,
+        "Connectedness (↑)": round(ccd, 3),
+        "Silhouette score (↑)": round(sil, 3),
+        "Purity (↑)": round(pur, 3),
+        "ARI (↑)": round(ari, 3),
+    })
+
+df_cs = pd.DataFrame(rows).set_index("Method")
+df_cs
+```
+
+## Connectedness vs Silhouette score
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Connectedness vs Silhouette
+sns.scatterplot(
+    data=df_cs.reset_index(),
+    x="Connectedness (↑)",
+    y="Silhouette score (↑)",
+    hue="Method",
+    style="Method",
+    s=150,
+    palette="Set2",
+    ax=axes[0]
+)
+axes[0].set_title("Connectedness vs Silhouette score")
+axes[0].set_xlim(0, 1)
+axes[0].set_ylim(-1, 1)
+axes[0].axhline(0, color="grey", linestyle="--", linewidth=0.8)
+
+# Purity vs ARI
+sns.scatterplot(
+    data=df_cs.reset_index(),
+    x="Purity (↑)",
+    y="ARI (↑)",
+    hue="Method",
+    style="Method",
+    s=150,
+    palette="Set2",
+    ax=axes[1]
+)
+axes[1].set_title("Purity vs ARI")
+axes[1].set_xlim(0, 1)
+axes[1].set_ylim(0, 1)
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| echo: false
+
+from utils.helpers import save_metrics
+save_metrics(st_dict)
+```

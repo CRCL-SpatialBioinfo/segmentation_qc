@@ -1,0 +1,24 @@
+# Data
+data/
+
+# Singularity
+*.sif
+*.tar.gz
+
+# Quarto cache and outputs
+_freeze/
+_output/
+.jupyter_cache/
+*.quarto_ipynb
+*.quarto
+
+# Theme fonts (base64 encoded)
+theme/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

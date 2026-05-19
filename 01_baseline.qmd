@@ -1,0 +1,174 @@
+---
+title: "Baseline Metrics"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+st_dict = load_processed_data(params)
+```
+
+## Cell counts and transcript assignment
+
+```{python}
+rows = []
+for method, st in st_dict.items():
+    st.bl.num_cells(inplace=True)
+    st.bl.perc_unassigned_transcripts(inplace=True)
+    st.bl.transcripts_per_cell()
+    st.bl.genes_per_cell()
+    st.bl.mean_transcripts_per_gene_per_cell()
+
+    obs = st.sdata.tables["table"].obs
+    uns = st.sdata.tables["table"].uns
+
+    rows.append({
+        "Method": method,
+        "# Cells": uns["num_cells"],
+        "% Unassigned transcripts": round(uns["perc_unassigned_transcripts"], 2),
+        "Mean transcripts/cell": round(obs["transcript_count"].mean(), 2),
+        "Median transcripts/cell": round(obs["transcript_count"].median(), 2),
+        "Mean genes/cell": round(obs["gene_count"].mean(), 2),
+        "Median genes/cell": round(obs["gene_count"].median(), 2),
+        "Mean transcripts/gene/cell": round(obs["mean_transcripts_per_gene"].mean(), 2),
+    })
+
+df_summary = pd.DataFrame(rows).set_index("Method")
+df_summary
+```
+
+## Transcript count distribution
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, (method, st) in zip(axes, st_dict.items()):
+    obs = st.sdata.tables["table"].obs
+
+    cap = obs["transcript_count"].quantile(0.99)
+    data = obs[obs["transcript_count"] <= cap]["transcript_count"]
+
+    ax.hist(data, bins=50, color="steelblue", edgecolor="white", linewidth=0.5)
+    ax.axvline(data.median(), color="red", linestyle="--",
+               label=f"Median: {data.median():.0f}")
+    ax.set_title(method)
+    ax.set_xlabel("Transcripts per cell")
+    ax.set_ylabel("# Cells")
+    ax.legend()
+
+fig.suptitle("Transcript count distribution", y=1.02)
+plt.tight_layout()
+plt.show()
+```
+
+## Gene count distribution
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, (method, st) in zip(axes, st_dict.items()):
+    obs = st.sdata.tables["table"].obs
+
+    cap = obs["gene_count"].quantile(0.99)
+    data = obs[obs["gene_count"] <= cap]["gene_count"]
+
+    ax.hist(data, bins=50, color="darkorange", edgecolor="white", linewidth=0.5)
+    ax.axvline(data.median(), color="red", linestyle="--",
+               label=f"Median: {data.median():.0f}")
+    ax.set_title(method)
+    ax.set_xlabel("Genes per cell")
+    ax.set_ylabel("# Cells")
+    ax.legend()
+
+fig.suptitle("Gene count distribution", y=1.02)
+plt.tight_layout()
+plt.show()
+```
+
+## Method comparison
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "transcript_count", "gene_count"]])
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+cap_tx = df_all["transcript_count"].quantile(0.99)
+cap_gn = df_all["gene_count"].quantile(0.99)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+sns.violinplot(
+    data=df_all[df_all["transcript_count"] <= cap_tx],
+    x="method", y="transcript_count",
+    palette="Set2", ax=axes[0]
+)
+axes[0].set_title("Transcripts per cell")
+axes[0].set_xlabel("")
+axes[0].set_ylabel("# Transcripts")
+
+sns.violinplot(
+    data=df_all[df_all["gene_count"] <= cap_gn],
+    x="method", y="gene_count",
+    palette="Set2", ax=axes[1]
+)
+axes[1].set_title("Genes per cell")
+axes[1].set_xlabel("")
+axes[1].set_ylabel("# Genes")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Transcripts per gene per cell
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "mean_transcripts_per_gene"]])
+
+df_all = pd.concat(dfs, ignore_index=True)
+cap = df_all["mean_transcripts_per_gene"].quantile(0.99)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+
+sns.violinplot(
+    data=df_all[df_all["mean_transcripts_per_gene"] <= cap],
+    x="method", y="mean_transcripts_per_gene",
+    palette="Set2", ax=ax
+)
+ax.set_title("Mean transcripts per gene per cell")
+ax.set_xlabel("")
+ax.set_ylabel("Transcripts / gene / cell")
+
+plt.tight_layout()
+plt.show()
+```
+
+
+```{python}
+#| echo: false
+
+from utils.helpers import save_metrics
+save_metrics(st_dict)
+```

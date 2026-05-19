@@ -1,0 +1,21 @@
+# Données
+xenium_path: "/data/warehouse/projects/single_cell/xenium/cotesarc/XR_V4/AN20004805_004/outs/"
+proseg_path: "/home/tonon/projects/COTESARC/data/xr_v4_proseg_3/AN20004805_004/"
+methods:
+  - xenium
+  - proseg_v3
+
+# Processed data
+processed_xenium_path: "/home/tonon/dev/segmentation_qc/data/processed/xenium_processed.zarr"
+processed_proseg_path: "/home/tonon/dev/segmentation_qc/data/processed/proseg3_processed.zarr"
+
+
+# Référence scRNA-seq
+has_reference: false
+reference_path: null
+cell_type_key: "celltype_major"
+
+# Paramètres QC
+min_qv: 20
+min_transcripts: 10
+min_genes: 5

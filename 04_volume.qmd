@@ -1,0 +1,340 @@
+---
+title: "Volume (3D) Metrics"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import ovrlpy
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+has_reference = params["has_reference"]
+st_dict = load_processed_data(params)
+
+
+# Baseline metrics needed for volume analysis
+for method, st in st_dict.items():
+    st.bl.transcripts_per_cell()
+    st.bl.genes_per_cell()
+    print(f"{method}: baseline metrics computed")
+
+```
+
+## Overview
+
+Spatial transcriptomics tissue sections are not truly 2D — they typically
+have a physical thickness of 4–10 µm. Cells can partially overlap along
+the z-dimension, causing transcript contamination between overlapping cells.
+This module quantifies how well each segmentation method resolves 3D cell
+overlaps.
+
+## Z distribution of transcripts
+
+Distribution of transcripts across z-planes. Xenium data may show z-drift
+(uneven distribution across depth), while Proseg v3 corrects for this
+internally.
+
+```{python}
+def plot_transcripts_across_z_bins(sdata, method, n_z_bins=10, xy_bin_size=5.0):
+    df = sdata["transcripts"].compute()
+    df["z_bin"] = pd.cut(df["z"], n_z_bins, labels=False)
+    df["x_bin"] = (df["x"] / xy_bin_size).astype(int)
+    df["y_bin"] = (df["y"] / xy_bin_size).astype(int)
+
+    x_minb, x_maxb = df["x_bin"].min(), df["x_bin"].max()
+    y_minb, y_maxb = df["y_bin"].min(), df["y_bin"].max()
+    nx = x_maxb - x_minb + 1
+    ny = y_maxb - y_minb + 1
+
+    fig, axes = plt.subplots(
+        1, n_z_bins,
+        figsize=(2.2 * n_z_bins, 4),
+        sharex=True, sharey=True,
+        constrained_layout=True
+    )
+    axes = np.atleast_1d(axes)
+
+    for i in range(n_z_bins):
+        ax = axes[i]
+        plane = df[df["z_bin"] == i]
+        counts = (
+            plane.groupby(["y_bin", "x_bin"])
+            .size()
+            .reindex(
+                pd.MultiIndex.from_product(
+                    [range(y_minb, y_maxb + 1), range(x_minb, x_maxb + 1)],
+                    names=["y_bin", "x_bin"]
+                ),
+                fill_value=0,
+            )
+            .values.reshape(ny, nx)
+        )
+        im = ax.imshow(counts, origin="lower", aspect="equal")
+        ax.set_title(f"Z {i+1}")
+        ax.set_xlabel("x")
+        if i == 0:
+            ax.set_ylabel("y")
+
+    cbar = fig.colorbar(im, ax=axes.ravel().tolist(), location="right", shrink=0.9)
+    cbar.set_label(f"# transcripts per {xy_bin_size}x{xy_bin_size} bin")
+    fig.suptitle(f"{method}: transcripts per z-plane", fontsize=14)
+    plt.show()
+
+for method, st in st_dict.items():
+    plot_transcripts_across_z_bins(st.sdata, method, n_z_bins=10)
+```
+
+## Top-bottom z consistency
+
+For each cell, transcripts are split into a bottom (z ≤ q30) and top
+(z ≥ q70) fraction. The cosine similarity between the two expression
+profiles measures whether the cell contains a consistent transcriptome
+across depth. Low similarity suggests 3D overlap or transcript contamination.
+
+Note: z-drift correction is disabled for Proseg v3 as it already corrects
+for z-drift internally.
+
+```{python}
+for method, st in st_dict.items():
+    correct_z = False if "proseg" in method else True
+    st.vl.similarity_top_bottom(correct_z_drift=correct_z)
+    print(f"{method}: top-bottom z similarity computed")
+```
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "cosine_sim_top_bottom_z"]].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+sns.kdeplot(
+    data=df_all,
+    x="cosine_sim_top_bottom_z",
+    hue="method",
+    palette="Set2",
+    common_norm=False,
+    fill=False,
+    ax=ax
+)
+ax.set_title("Top-bottom z consistency (cosine similarity)")
+ax.set_xlabel("Cosine similarity")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Relationship between transcript count and top-bottom similarity
+fig, axes = plt.subplots(1, len(st_dict), figsize=(6 * len(st_dict), 4))
+if len(st_dict) == 1:
+    axes = [axes]
+
+for ax, (method, st) in zip(axes, st_dict.items()):
+    df = st.sdata.tables["table"].obs[
+        ["cosine_sim_top_bottom_z", "transcript_count"]
+    ].dropna()
+    sns.regplot(
+        data=df,
+        x="transcript_count",
+        y="cosine_sim_top_bottom_z",
+        scatter_kws={"alpha": 0.3, "s": 5},
+        line_kws={"color": "red"},
+        lowess=True,
+        ci=None,
+        ax=ax
+    )
+    ax.set_title(f"{method}")
+    ax.set_xlabel("Transcript count")
+    ax.set_ylabel("cosine_sim_top_bottom_z")
+
+fig.suptitle("Top-bottom z similarity vs transcript count", y=1.02)
+plt.tight_layout()
+plt.show()
+```
+
+## Vertical Signal Integrity (VSI)
+
+VSI (ovrlpy) computes a pixel-level map of vertical signal integrity —
+regions where the transcriptome is consistent across depth (high VSI)
+versus regions prone to 3D mixing (low VSI). We compute mean VSI per cell
+by averaging VSI values at each transcript's (x,y) position.
+
+```{python}
+# Compute VSI map once on Xenium data
+def run_ovrlpy(sdata, n_comp, points_gene_key="feature_name", n_workers=4):
+    coordinate_df = sdata["transcripts"].compute()
+    coordinate_df = coordinate_df.rename(columns={points_gene_key: "gene"})
+    coordinate_df = coordinate_df[["gene", "x", "y", "z"]]
+    coordinate_df["z"] = coordinate_df["z"] - coordinate_df["z"].min()
+    ovrlpy_sdata = ovrlpy.Ovrlp(
+        coordinate_df, n_components=n_comp, n_workers=n_workers, random_state=42
+    )
+    ovrlpy_sdata.analyse()
+    return ovrlpy_sdata.integrity_map
+
+n_genes = st_dict["xenium"].sdata.tables["table"].n_vars
+print(f"Computing VSI map on Xenium data ({n_genes} genes)...")
+vsi_map = run_ovrlpy(st_dict["xenium"].sdata, n_comp=min(10, n_genes))
+print("VSI map computed")
+```
+
+```{python}
+for method, st in st_dict.items():
+    st.vl.vertical_signal_integrity_per_cell(vsi_map)
+    print(f"{method}: VSI per cell computed")
+```
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "vertical_signal_integrity"]].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+sns.kdeplot(
+    data=df_all,
+    x="vertical_signal_integrity",
+    hue="method",
+    palette="Set2",
+    common_norm=False,
+    fill=False,
+    ax=ax
+)
+ax.set_title("Vertical Signal Integrity per cell")
+ax.set_xlabel("VSI")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# VSI vs top-bottom z similarity
+n = len(st_dict)
+fig, axes = plt.subplots(1, n, figsize=(5 * n, 4), sharey=True)
+axes = np.atleast_1d(axes)
+
+for ax, (method, st) in zip(axes, st_dict.items()):
+    df = st.sdata.tables["table"].obs[
+        ["vertical_signal_integrity", "cosine_sim_top_bottom_z", "transcript_count"]
+    ].dropna()
+    df = df[df["transcript_count"] > df["transcript_count"].quantile(0.1)]
+
+    r = np.corrcoef(df["vertical_signal_integrity"], df["cosine_sim_top_bottom_z"])[0, 1]
+    r2 = r ** 2
+
+    sns.regplot(
+        data=df,
+        x="vertical_signal_integrity",
+        y="cosine_sim_top_bottom_z",
+        scatter_kws={"alpha": 0.3, "s": 5},
+        line_kws={"color": "red"},
+        ci=95,
+        ax=ax
+    )
+    ax.set_title(f"{method} (R² = {r2:.3f})")
+    ax.set_xlabel("Vertical Signal Integrity")
+    ax.set_ylabel("cosine_sim_top_bottom_z")
+
+fig.suptitle("VSI vs top-bottom z consistency", y=1.02)
+plt.tight_layout()
+plt.show()
+```
+
+## Heterotypic overlap (Proseg only)
+
+This metric quantifies where Proseg detects overlaps between cells of
+different types across z-layers. It requires per-z-layer cell polygons
+and is therefore only available for Proseg v3.
+
+```{python}
+proseg_dict = {k: v for k, v in st_dict.items() if "proseg" in k}
+
+if proseg_dict and has_reference:
+    for method, st in proseg_dict.items():
+        st.vl.fraction_heterotypic_overlap(unknown_policy="exclude")
+        print(f"{method}: heterotypic overlap computed")
+elif proseg_dict and not has_reference:
+    print("Heterotypic overlap requires a scRNA-seq reference (has_reference: true). Skipping.")
+else:
+    print("No Proseg method found — skipping heterotypic overlap.")
+```
+
+```{python}
+if proseg_dict and has_reference:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    dfs_area = []
+    dfs_frac = []
+    for method, st in proseg_dict.items():
+        obs = st.sdata.tables["table"].obs.copy()
+        obs["method"] = method
+        dfs_area.append(obs[["method", "heterotypic_overlap_area"]].dropna())
+        dfs_frac.append(obs[["method", "heterotypic_overlap_fraction"]].dropna())
+
+    df_area = pd.concat(dfs_area, ignore_index=True)
+    df_frac = pd.concat(dfs_frac, ignore_index=True)
+
+    sns.kdeplot(
+        data=df_area, x="heterotypic_overlap_area",
+        hue="method", palette="Set2", common_norm=False, fill=False, ax=axes[0]
+    )
+    axes[0].set_title("Heterotypic overlap area")
+
+    sns.kdeplot(
+        data=df_frac, x="heterotypic_overlap_fraction",
+        hue="method", palette="Set2", common_norm=False, fill=False, ax=axes[1]
+    )
+    axes[1].set_title("Heterotypic overlap fraction")
+
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Section skipped.")
+```
+
+## Summary table
+
+```{python}
+from utils.helpers import save_metrics
+save_metrics(st_dict)
+
+rows = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs
+    row = {"Method": method}
+
+    if "cosine_sim_top_bottom_z" in obs:
+        row["Median top-bottom z similarity (↑)"] = round(
+            obs["cosine_sim_top_bottom_z"].median(), 3
+        )
+    if "vertical_signal_integrity" in obs:
+        row["Median VSI (↑)"] = round(
+            obs["vertical_signal_integrity"].median(), 3
+        )
+    if "heterotypic_overlap_fraction" in obs:
+        row["Median heterotypic overlap fraction (↓)"] = round(
+            obs["heterotypic_overlap_fraction"].median(), 3
+        )
+
+    rows.append(row)
+
+pd.DataFrame(rows).set_index("Method")
+```

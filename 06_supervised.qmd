@@ -1,0 +1,122 @@
+---
+title: "Supervised Metrics"
+---
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+has_reference = params["has_reference"]
+
+if not has_reference:
+    print("No scRNA-seq reference provided. This section is skipped.")
+```
+
+```{python}
+#| echo: false
+if has_reference:
+    import anndata as ad
+    import segtraq
+
+    st_dict = load_processed_data(params)
+
+    # Load reference
+    adata_ref = ad.read_h5ad(params["reference_path"])
+
+    # Label transfer
+    for method, st in st_dict.items():
+        st.run_label_transfer(
+            adata_ref,
+            ref_cell_type=params["cell_type_key"],
+            inplace=True,
+        )
+        print(f"{method}: label transfer done")
+```
+
+## Cell type distribution
+
+```{python}
+#| echo: false
+if has_reference:
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    method_dfs = []
+    for method, st in st_dict.items():
+        df = (
+            st.sdata["table"].obs["transferred_cell_type"]
+            .value_counts(normalize=True)
+            .reset_index()
+        )
+        df.columns = ["celltype", "proportion"]
+        df["method"] = method
+        method_dfs.append(df)
+
+    plot_df = pd.concat(method_dfs, ignore_index=True)
+    plot_wide = plot_df.pivot(
+        index="method", columns="celltype", values="proportion"
+    ).fillna(0)
+
+    fig, ax = plt.subplots(figsize=(4, 5))
+    plot_wide.plot(kind="bar", stacked=True, ax=ax)
+    ax.set_ylabel("Proportion")
+    ax.set_xlabel("Method")
+    ax.legend(title="Cell type", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Section skipped — no reference provided.")
+```
+
+## Silhouette score on transferred labels
+
+```{python}
+#| echo: false
+if has_reference:
+    rows = []
+    for method, st in st_dict.items():
+        sil = st.cs.silhouette_score(cell_type_key="transferred_cell_type")
+        rows.append({"Method": method, "Silhouette score (↑)": round(sil, 3)})
+
+    pd.DataFrame(rows).set_index("Method")
+else:
+    print("Section skipped — no reference provided.")
+```
+
+## Supervised markers
+
+```{python}
+#| echo: false
+if has_reference:
+    markers = {}
+    for method, st in st_dict.items():
+        tbl = st.sdata["table"]
+        common_genes = tbl.var_names[tbl.var_names.isin(adata_ref.var_names)]
+        adata_ref_common = adata_ref[:, common_genes].copy()
+
+        markers[method] = segtraq.markers_from_reference(
+            adata_ref_common,
+            cell_type_key=params["cell_type_key"],
+            n_jobs=-1,
+        )
+        print(f"{method}: markers computed")
+else:
+    print("Section skipped — no reference provided.")
+```
+
+```{python}
+#| echo: false
+
+if has_reference:
+    from utils.helpers import save_metrics
+    save_metrics(st_dict)
+```

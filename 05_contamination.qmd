@@ -1,0 +1,235 @@
+---
+title: "Contamination — Region Similarity"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+st_dict = load_processed_data(params)
+```
+
+## Overview
+
+The region similarity module evaluates transcript contamination between
+neighboring cells. The underlying assumption is that gene expression
+should be consistent within a cell — deviations at the cell border
+suggest transcript leakage from neighboring cells.
+
+## Nucleus-cell overlap (IoU)
+
+Intersection over Union (IoU) between nucleus and cell boundaries.
+A low IoU indicates that the cell boundary extends far beyond the nucleus,
+which is expected for transcript-based methods like Proseg v3.
+
+```{python}
+for method, st in st_dict.items():
+    st.rs.match_nuclei_to_cells(n_jobs=-1)
+    print(f"{method}: nuclei matched to cells")
+```
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "iou"]].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+# Distribution
+sns.kdeplot(
+    data=df_all,
+    x="iou",
+    hue="method",
+    palette="Set2",
+    common_norm=False,
+    fill=False,
+    ax=axes[0]
+)
+axes[0].set_title("IoU distribution (nucleus vs cell)")
+axes[0].set_xlabel("IoU")
+axes[0].set_xlim(0, 1)
+
+# Median per method
+medians = df_all.groupby("method")["iou"].median().reset_index()
+sns.barplot(
+    data=medians,
+    x="method", y="iou",
+    palette="Set2",
+    ax=axes[1]
+)
+axes[1].set_title("Median IoU per method")
+axes[1].set_xlabel("")
+axes[1].set_ylabel("Median IoU")
+axes[1].set_ylim(0, 1)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Nucleus-cytoplasm expression similarity
+
+Expression similarity between the nucleus and cytoplasm compartments.
+Higher values indicate more consistent intra-cellular expression.
+
+```{python}
+for method, st in st_dict.items():
+    st.rs.similarity_nucleus_cytoplasm(n_jobs=-1)
+    print(f"{method}: nucleus-cytoplasm similarity computed")
+```
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "similarity_nucleus_cytoplasm"]].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+sns.kdeplot(
+    data=df_all,
+    x="similarity_nucleus_cytoplasm",
+    hue="method",
+    palette="Set2",
+    common_norm=False,
+    fill=False,
+    ax=ax
+)
+ax.set_title("Nucleus-cytoplasm expression similarity")
+ax.set_xlabel("Cosine similarity")
+plt.tight_layout()
+plt.show()
+```
+
+## Center-border and border-neighborhood similarity
+
+```{python}
+for method, st in st_dict.items():
+    st.rs.similarity_center_border()
+    st.rs.similarity_border_neighborhood()
+    print(f"{method}: center-border similarity computed")
+```
+
+```{python}
+features = ["similarity_center_border", "similarity_border_neighborhood"]
+
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method"] + features].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, feat in zip(axes, features):
+    sns.kdeplot(
+        data=df_all,
+        x=feat,
+        hue="method",
+        palette="Set2",
+        common_norm=False,
+        fill=False,
+        ax=ax
+    )
+    ax.set_title(feat.replace("_", " ").capitalize())
+    ax.set_xlabel("Cosine similarity")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Border admixture score
+
+The border admixture score quantifies how much the cell border expression
+is explained by a mixture of the cell center and its neighborhood,
+rather than the center alone. A high score indicates contamination.
+
+```{python}
+for method, st in st_dict.items():
+    st.rs.border_admixture_score()
+    print(f"{method}: border admixture score computed")
+```
+
+```{python}
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method", "border_admixture_score"]].dropna())
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+sns.kdeplot(
+    data=df_all,
+    x="border_admixture_score",
+    hue="method",
+    palette="Set2",
+    common_norm=False,
+    fill=False,
+    ax=axes[0]
+)
+axes[0].set_title("Border admixture score distribution")
+axes[0].set_xlabel("Border admixture score")
+
+medians = df_all.groupby("method")["border_admixture_score"].median().reset_index()
+sns.barplot(
+    data=medians,
+    x="method", y="border_admixture_score",
+    palette="Set2",
+    ax=axes[1]
+)
+axes[1].set_title("Median border admixture score per method")
+axes[1].set_xlabel("")
+axes[1].set_ylabel("Median score")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Summary table
+
+```{python}
+rows = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs
+
+    rows.append({
+        "Method": method,
+        "Median IoU (↑)": round(obs["iou"].median(), 3) if "iou" in obs else None,
+        "Median nucleus-cytoplasm similarity (↑)": round(obs["similarity_nucleus_cytoplasm"].median(), 3) if "similarity_nucleus_cytoplasm" in obs else None,
+        "Median center-border similarity (↑)": round(obs["similarity_center_border"].median(), 3) if "similarity_center_border" in obs else None,
+        "Median border admixture score (↓)": round(obs["border_admixture_score"].median(), 3) if "border_admixture_score" in obs else None,
+    })
+
+pd.DataFrame(rows).set_index("Method")
+```
+
+```{python}
+#| echo: false
+
+from utils.helpers import save_metrics
+save_metrics(st_dict)
+```

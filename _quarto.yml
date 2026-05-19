@@ -1,0 +1,51 @@
+project:
+  type: website
+  output-dir: _output
+
+website:
+  title: "Segmentation QC Report — Xenium"
+  navbar:
+    background: primary
+    left:
+      - href: index.qmd
+        text: "Overview"
+
+  sidebar:
+    style: "docked"
+    search: true
+    contents:
+      - href: index.qmd
+        text: Overview
+      - href: 00_data_loading.qmd
+        text: Data Loading
+      - href: 01_baseline.qmd
+        text: Baseline
+      - href: 02_morphology.qmd
+        text: Morphology
+      - href: 03_clustering.qmd
+        text: Clustering
+      - href: 04_volume.qmd
+        text: Volume (3D)
+      - href: 05_contamination.qmd
+        text: Contamination
+      - href: 06_supervised.qmd
+        text: Supervised
+      - href: 07_summary.qmd
+        text: Summary
+
+format:
+  html:
+    theme: sandstone
+    css: custom.scss
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+
+execute:
+  jupyter: python3
+  freeze: true
+  cache: false
+  echo: false
+  warning: false

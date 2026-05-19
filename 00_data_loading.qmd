@@ -1,0 +1,144 @@
+---
+title: "Data Loading & Preprocessing"
+---
+
+This chapter loads raw segmentation outputs, applies the necessary
+preprocessing steps, and saves processed `SpatialData` objects to zarr.
+Subsequent chapters read from these processed files directly.
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import spatialdata as sd
+import spatialdata_io
+from pathlib import Path
+from utils.helpers import (
+    load_params,
+    read_geojson_gz,
+    add_proseg_zlayers,
+    align_to_xenium,
+    init_segtraq_objects,
+    filter_transcripts,
+)
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+processed_xenium_path = Path(params["processed_xenium_path"])
+processed_proseg_path = Path(params["processed_proseg_path"])
+processed_xenium_path.parent.mkdir(parents=True, exist_ok=True)
+processed_proseg_path.parent.mkdir(parents=True, exist_ok=True)
+```
+
+## Xenium
+
+```{python}
+xenium_path = Path(params["xenium_path"])
+
+sdata_xenium = spatialdata_io.xenium(
+    xenium_path,
+    cells_as_circles=False,
+    cells_labels=False,
+    nucleus_labels=False,
+    morphology_mip=False,
+)
+
+# Link table to cell boundaries
+sdata_xenium.tables["table"].obs["region"] = "cell_boundaries"
+sdata_xenium.tables["table"].obs["region"] = (
+    sdata_xenium.tables["table"].obs["region"].astype("category")
+)
+sdata_xenium.set_table_annotates_spatialelement("table", region="cell_boundaries")
+
+# Inspect without triggering __repr__
+print('Keys images:', list(sdata_xenium.images.keys()))
+print('Keys shapes:', list(sdata_xenium.shapes.keys()))
+print('Keys points:', list(sdata_xenium.points.keys()))
+print('N cells:', sdata_xenium.tables['table'].n_obs)
+```
+
+## Proseg v3
+
+```{python}
+import spatialdata as sd
+proseg_path = Path(params["proseg_path"])
+
+# Read SpatialData zarr output from Proseg v3
+sdata_proseg3 = sd.read_zarr(proseg_path / "proseg-output.zarr")
+
+# Rename transcript columns: use observed (raw) positions, not repositioned
+pts = sdata_proseg3.points["transcripts"]
+pts = pts.rename(columns={
+    "x": "repositioned_x",
+    "y": "repositioned_y",
+    "z": "repositioned_z",
+    "observed_x": "x",
+    "observed_y": "y",
+    "observed_z": "z",
+})
+pts["gene"] = pts["gene"].astype("category")
+sdata_proseg3.points["transcripts"] = sd.models.PointsModel.parse(pts, sort=True)
+
+# Fix cell_boundaries index to align with table instance_key
+sdata_proseg3.shapes["cell_boundaries"].set_index("cell", drop=True, inplace=True)
+
+# Add per-z-layer boundaries
+sdata_proseg3 = add_proseg_zlayers(sdata_proseg3, proseg_path)
+
+# Align image, nucleus boundaries and transformations to Xenium
+sdata_proseg3 = align_to_xenium(sdata_proseg3, sdata_xenium, has_zlayers=True)
+
+# Inspect without triggering __repr__
+print('Keys images:', list(sdata_proseg3.images.keys()))
+print('Keys shapes:', list(sdata_proseg3.shapes.keys()))
+print('Keys points:', list(sdata_proseg3.points.keys()))
+print('N cells:', sdata_proseg3.tables['table'].n_obs)
+```
+
+## Filter transcripts
+
+```{python}
+# Initialize SegTraQ objects to apply filtering
+st_dict = init_segtraq_objects(sdata_xenium, sdata_proseg3)
+st_dict = filter_transcripts(st_dict, params)
+```
+
+## Save processed data
+
+```{python}
+# Overwrite if already exists
+import shutil
+
+for path in [processed_xenium_path, processed_proseg_path]:
+    if path.exists():
+        shutil.rmtree(path)
+        print(f"Removed existing: {path}")
+
+sdata_xenium.write(str(processed_xenium_path))
+print(f"Xenium saved → {processed_xenium_path}")
+
+sdata_proseg3.write(str(processed_proseg_path))
+print(f"Proseg v3 saved → {processed_proseg_path}")
+```
+
+## Summary
+
+```{python}
+import pandas as pd
+
+rows = []
+for method, st in st_dict.items():
+    rows.append({
+        "Method": method,
+        "# Cells": st.sdata.tables["table"].n_obs,
+        "# Genes": st.sdata.tables["table"].n_vars,
+    })
+
+pd.DataFrame(rows).set_index("Method")
+```

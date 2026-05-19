@@ -1,0 +1,127 @@
+---
+title: "Summary & Conclusion"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from utils.helpers import load_processed_data
+from utils.helpers import load_metrics
+
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+st_dict = load_processed_data(params)
+obs_dict = load_metrics(params["methods"])
+```
+
+## Comparative metrics table
+
+```{python}
+rows = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs
+    uns = st.sdata.tables["table"].uns
+
+    row = {"Method": method}
+
+    # Baseline
+    if "num_cells" in uns:
+        row["# Cells"] = uns["num_cells"]
+    if "perc_unassigned_transcripts" in uns:
+        row["% Unassigned (↓)"] = round(uns["perc_unassigned_transcripts"], 2)
+    if "transcript_count" in obs:
+        row["Median transcripts/cell (↑)"] = round(obs["transcript_count"].median(), 1)
+    if "gene_count" in obs:
+        row["Median genes/cell (↑)"] = round(obs["gene_count"].median(), 1)
+
+    # Morphology
+    if "cell_area" in obs:
+        row["Median cell area"] = round(obs["cell_area"].median(), 1)
+    if "circularity" in obs:
+        row["Median circularity"] = round(obs["circularity"].median(), 3)
+
+    # Contamination
+    if "iou" in obs:
+        row["Median IoU (↑)"] = round(obs["iou"].median(), 3)
+    if "border_admixture_score" in obs:
+        row["Median border admixture (↓)"] = round(obs["border_admixture_score"].median(), 3)
+
+    rows.append(row)
+
+df_summary = pd.DataFrame(rows).set_index("Method")
+df_summary.T
+```
+
+## Radar chart
+
+```{python}
+#| echo: false
+metrics = {
+    "Transcript\ncount":   ("transcript_count", True),   # higher is better, no invert
+    "Gene\ncount":         ("gene_count", True),
+    "IoU":                 ("iou", True),
+    "Low\nadmixture":      ("border_admixture_score", True),  # invert
+    "Circularity":         ("circularity", True),
+}
+
+method_scores = {}
+
+for metric_label, (col, invert) in metrics.items():
+    vals = {}
+    for method, obs in obs_dict.items():
+        if col in obs.columns:
+            vals[method] = obs[col].median()
+    if vals:
+        min_v, max_v = min(vals.values()), max(vals.values())
+        for method, v in vals.items():
+            norm = (v - min_v) / (max_v - min_v) if max_v != min_v else 0.5
+            if invert:
+                norm = 1 - norm
+            method_scores.setdefault(method, {})[metric_label] = norm
+
+labels = list(metrics.keys())
+n = len(labels)
+angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+angles += angles[:1]
+
+fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+colors = sns.color_palette("Set2", len(obs_dict))
+
+for (method, scores), color in zip(method_scores.items(), colors):
+    values = [scores.get(l, 0) for l in labels]
+    values += values[:1]
+    ax.plot(angles, values, label=method, color=color, linewidth=2)
+    ax.fill(angles, values, alpha=0.1, color=color)
+
+ax.set_xticks(angles[:-1])
+ax.set_xticklabels(labels, size=11)
+ax.set_ylim(0, 1)
+ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+ax.set_yticklabels(["0.25", "0.5", "0.75", "1.0"], size=8)
+ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+ax.set_title("Method comparison (normalized metrics)", pad=20)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Conclusion
+
+```{python}
+print("Report generated successfully.")
+print(f"Methods compared: {', '.join(st_dict.keys())}")
+print(f"Reference scRNA-seq: {'yes' if params['has_reference'] else 'no'}")
+```
+

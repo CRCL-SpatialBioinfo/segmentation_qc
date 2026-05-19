@@ -1,0 +1,157 @@
+---
+title: "Cell Morphology"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import yaml
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from utils.helpers import load_processed_data
+
+with open("_params.yml") as f:
+    params = yaml.safe_load(f)
+
+st_dict = load_processed_data(params)
+
+# Compute morphological features for each method
+for method, st in st_dict.items():
+    st.bl.morphological_features(n_jobs=4)
+    print(f"{method}: morphological features computed")
+```
+
+## Overview
+
+Morphological features describe the shape and size of segmented cells.
+Differences between methods reflect their underlying segmentation strategies:
+Xenium uses nuclear expansion, while Proseg v3 infers cell boundaries
+from transcript positions.
+
+## Cell area and perimeter
+
+```{python}
+features = ["cell_area", "perimeter"]
+
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method"] + features])
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, feat in zip(axes, features):
+    cap = df_all[feat].quantile(0.99)
+    sns.violinplot(
+        data=df_all[df_all[feat] <= cap],
+        x="method", y=feat,
+        palette="Set2", ax=ax
+    )
+    ax.set_title(feat.replace("_", " ").capitalize())
+    ax.set_xlabel("")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Shape descriptors
+
+```{python}
+shape_features = ["circularity", "solidity", "convexity", "elongation", "eccentricity"]
+
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method"] + shape_features])
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, len(shape_features), figsize=(4 * len(shape_features), 4))
+
+for ax, feat in zip(axes, shape_features):
+    sns.kdeplot(
+        data=df_all,
+        x=feat,
+        hue="method",
+        palette="Set2",
+        common_norm=False,
+        fill=False,
+        ax=ax
+    )
+    ax.set_title(feat.replace("_", " ").capitalize())
+    ax.set_xlabel("")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Compactness and extent
+
+```{python}
+features_2 = ["compactness", "extent"]
+
+dfs = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs.copy()
+    obs["method"] = method
+    dfs.append(obs[["method"] + features_2])
+
+df_all = pd.concat(dfs, ignore_index=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, feat in zip(axes, features_2):
+    sns.kdeplot(
+        data=df_all,
+        x=feat,
+        hue="method",
+        palette="Set2",
+        common_norm=False,
+        fill=False,
+        ax=ax
+    )
+    ax.set_title(feat.replace("_", " ").capitalize())
+    ax.set_xlabel("")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Summary table
+
+```{python}
+morph_features = [
+    "cell_area", "perimeter", "circularity", "solidity",
+    "convexity", "elongation", "eccentricity", "compactness", "extent"
+]
+
+rows = []
+for method, st in st_dict.items():
+    obs = st.sdata.tables["table"].obs
+    row = {"Method": method}
+    for feat in morph_features:
+        if feat in obs.columns:
+            row[f"{feat} (mean)"] = round(obs[feat].mean(), 3)
+            row[f"{feat} (median)"] = round(obs[feat].median(), 3)
+    rows.append(row)
+
+pd.DataFrame(rows).set_index("Method").T
+```
+
+```{python}
+#| echo: false
+
+from utils.helpers import save_metrics
+save_metrics(st_dict)
+```
